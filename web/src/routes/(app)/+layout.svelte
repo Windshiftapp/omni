@@ -45,8 +45,29 @@
     import SidebarNavigationClose from '$lib/components/sidebar-navigation-close.svelte'
     import ChatHistorySearch from '$lib/components/chat-history-search.svelte'
     import type { Chat } from '$lib/server/db/schema'
+    import type { ArtifactData } from '$lib/utils/artifacts'
 
     import { themeStore } from '$lib/themes/store.svelte'
+    import ArtifactResizablePane from '$lib/components/artifacts/artifact-resizable-pane.svelte'
+    import {
+        ResizablePaneGroup,
+        ResizablePane,
+        ResizableHandle,
+    } from '$lib/components/ui/resizable'
+    import { artifactPaneState } from '$lib/stores/artifact-pane.svelte'
+
+    let artifactPaneWidth = $state(50)
+    // Closing is derived: once the page turns the pane off, the store still
+    // keeps the last artifact (for the slide-out), so `closing` flips true.
+    // The wrapper listens for the flex-grow transition end and calls
+    // `onPaneClosed`, which clears the artifact (unmount).
+    let artifactPaneClosing = $derived(
+        !artifactPaneState.open && artifactPaneState.artifact !== null,
+    )
+
+    function onPaneClosed() {
+        artifactPaneState.closeFinishedHandler?.()
+    }
     import { applyTheme } from '$lib/themes/engine'
     import ThemePicker from '$lib/components/theme-picker.svelte'
 
@@ -442,59 +463,80 @@
     </Sidebar>
 
     <!-- Main content area -->
-    <div class="flex max-h-[100vh] w-full min-w-0 flex-1 flex-col">
-        <header class={cn('bg-background sticky top-0 z-50 transition-shadow')}>
-            <div class="flex h-16 w-full items-center justify-between px-3 sm:px-6">
-                <div class="text-foreground flex h-16 min-w-0 flex-1 items-center">
-                    <SidebarTrigger class="mr-1 size-11 shrink-0 cursor-pointer md:hidden" />
-                    <div class="min-w-0 flex-1 overflow-hidden px-2 text-base font-medium sm:px-4">
-                        {#if page.url.pathname === '/search'}
-                            Search
-                        {:else if page.url.pathname.startsWith('/chat') && currentChatTitle}
-                            {#if isEditingHeaderTitle}
-                                <input
-                                    bind:this={headerTitleInputRef}
-                                    bind:value={headerTitleValue}
-                                    class="text-foreground border-border w-full border-b bg-transparent outline-none"
-                                    onkeydown={(e) => {
-                                        if (e.key === 'Enter') saveHeaderTitle()
-                                        if (e.key === 'Escape') {
-                                            isEditingHeaderTitle = false
-                                        }
-                                    }}
-                                    onblur={() => saveHeaderTitle()} />
-                            {:else}
-                                <button
-                                    class="text-foreground block w-full cursor-pointer truncate text-left transition-opacity hover:opacity-70"
-                                    onclick={() => {
-                                        isEditingHeaderTitle = true
-                                        headerTitleValue = currentChatTitle || ''
-                                        requestAnimationFrame(() => headerTitleInputRef?.focus())
-                                    }}>
-                                    {currentChatTitle}
-                                </button>
-                            {/if}
-                        {:else if page.url.pathname.startsWith('/chat')}
-                            Chat
-                        {:else if page.url.pathname.startsWith('/agents')}
-                            Agents
-                        {:else if page.url.pathname.startsWith('/skills')}
-                            Skills
-                        {:else}
-                            <!-- empty -->
-                        {/if}
+    <div class="flex max-h-[100vh] w-full min-w-0 flex-1">
+        <ResizablePaneGroup
+            direction="horizontal"
+            class="artifact-pane-group min-h-0 min-w-0 flex-1">
+            <ResizablePane class="relative flex min-w-0 flex-col">
+                <header class={cn('bg-background sticky top-0 z-50 transition-shadow')}>
+                    <div class="flex h-16 w-full items-center justify-between px-3 sm:px-6">
+                        <div class="text-foreground flex h-16 min-w-0 flex-1 items-center">
+                            <SidebarTrigger
+                                class="mr-1 size-11 shrink-0 cursor-pointer md:hidden" />
+                            <div
+                                class="min-w-0 flex-1 overflow-hidden px-2 text-base font-medium sm:px-4">
+                                {#if page.url.pathname === '/search'}
+                                    Search
+                                {:else if page.url.pathname.startsWith('/chat') && currentChatTitle}
+                                    {#if isEditingHeaderTitle}
+                                        <input
+                                            bind:this={headerTitleInputRef}
+                                            bind:value={headerTitleValue}
+                                            class="text-foreground border-border w-full border-b bg-transparent outline-none"
+                                            onkeydown={(e) => {
+                                                if (e.key === 'Enter') saveHeaderTitle()
+                                                if (e.key === 'Escape') {
+                                                    isEditingHeaderTitle = false
+                                                }
+                                            }}
+                                            onblur={() => saveHeaderTitle()} />
+                                    {:else}
+                                        <button
+                                            class="text-foreground block w-full cursor-pointer truncate text-left transition-opacity hover:opacity-70"
+                                            onclick={() => {
+                                                isEditingHeaderTitle = true
+                                                headerTitleValue = currentChatTitle || ''
+                                                requestAnimationFrame(() =>
+                                                    headerTitleInputRef?.focus(),
+                                                )
+                                            }}>
+                                            {currentChatTitle}
+                                        </button>
+                                    {/if}
+                                {:else if page.url.pathname.startsWith('/chat')}
+                                    Chat
+                                {:else if page.url.pathname.startsWith('/agents')}
+                                    Agents
+                                {:else if page.url.pathname.startsWith('/skills')}
+                                    Skills
+                                {:else}
+                                    <!-- empty -->
+                                {/if}
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <ThemePicker class="h-8 w-8 lg:h-9 lg:w-9" />
+                        </div>
                     </div>
-                </div>
-                <div class="flex items-center gap-2">
-                    <ThemePicker class="h-8 w-8 lg:h-9 lg:w-9" />
-                </div>
-            </div>
-        </header>
+                </header>
 
-        <!-- Main content -->
-        <main class="min-h-0 flex-1">
-            {@render children()}
-        </main>
+                <!-- Main content -->
+                <main class="min-h-0 flex-1">
+                    {@render children()}
+                </main>
+            </ResizablePane>
+            {#if artifactPaneState.artifact}
+                {@const artifact = artifactPaneState.artifact}
+                <ResizableHandle withHandle />
+                <ArtifactResizablePane
+                    {artifact}
+                    initialWidth={artifactPaneWidth}
+                    closing={artifactPaneClosing}
+                    onWidthChange={(size) => (artifactPaneWidth = size)}
+                    onClose={() => artifactPaneState.closeHandler?.()}
+                    onClosed={onPaneClosed} />
+            {/if}
+        </ResizablePaneGroup>
     </div>
 </SidebarProvider>
 
@@ -558,3 +600,45 @@
         </DropdownMenu.Root>
     </SidebarMenuItem>
 {/snippet}
+
+<style>
+    /* Both panes transition their flex-grow (chat shrinks/grows while the pane
+       grows/shrinks, in tandem). Scoped to groups with the second pane mounted
+       so a lone chat pane never picks up the transition after unmount. */
+    :global(.artifact-pane-group:has([data-pane]:nth-child(3)) [data-pane]) {
+        transition: flex-grow 500ms cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    /* The slide-in runs slower than the slide-out so the two feel matched:
+       the open starts from an invisible 0-width pane, so without a longer
+       duration it reads as quicker than collapsing back to 0. */
+    :global(
+        .artifact-pane-group:has([data-pane]:nth-child(3)):has(.artifact-anim-open) [data-pane]
+    ) {
+        transition: flex-grow 700ms cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    /* For one frame after the pane mounts, force the closed layout (chat 100%,
+       pane 0%). `!important` overrides paneforge's inline sizes; removing the
+       class below lets the transition animate both panes together. */
+    :global(.artifact-pane-group:has(.artifact-opening) [data-pane]:first-child) {
+        flex-grow: 100 !important;
+    }
+    :global(.artifact-pane-group:has(.artifact-opening) [data-pane]:last-child) {
+        flex-grow: 0 !important;
+    }
+
+    /* Closing: reverse animation (chat expands, pane collapses), then the
+       pane unmounts after the transition. Same !important-override trick. */
+    :global(.artifact-pane-group:has(.artifact-closing) [data-pane]:first-child) {
+        flex-grow: 100 !important;
+    }
+    :global(.artifact-pane-group:has(.artifact-closing) [data-pane]:last-child) {
+        flex-grow: 0 !important;
+    }
+
+    /* Dragging must not fight the transition. */
+    :global(.artifact-pane-group:has([data-pane-resizer][data-active]) [data-pane]) {
+        transition-duration: 0ms !important;
+    }
+</style>

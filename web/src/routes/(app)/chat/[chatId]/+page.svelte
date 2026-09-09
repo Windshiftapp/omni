@@ -51,8 +51,11 @@
     import { ToolApprovalStatus } from '$lib/types/message'
     import type { MentionedDocument } from '$lib/types/message'
     import { OmniToolResultKind, tryParseOmniEnvelope } from '$lib/types/omni-tool-result'
+    import type { ArtifactData } from '$lib/utils/artifacts'
+    import { collectPanelArtifacts } from '$lib/utils/artifacts'
     import { fetchChatStreamStatus } from '$lib/utils/stream-status'
     import ToolCallsGroup from '$lib/components/tool-calls-group.svelte'
+    import { artifactPaneState } from '$lib/stores/artifact-pane.svelte'
     import ThinkingIndicator from '$lib/components/thinking-indicator.svelte'
     import { cn } from '$lib/utils'
     import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources'
@@ -96,6 +99,7 @@
         eventSource = null
         activeStreamChatId = null
         clearReconnectState()
+        artifactPaneState.unbind()
     })
 
     afterNavigate(() => {
@@ -125,6 +129,9 @@
             pendingApproval = pendingApprovalFromData()
             oauthEventByToolCallId = {}
             oauthBlockerActive = data.pendingOAuth !== null
+            chosenArtifactKey = null
+            artifactPaneOpen = false
+            lastOpenedArtifact = null
         }
     })
 
@@ -499,6 +506,48 @@
 
     let processedMessages = $derived(processMessages(chatMessages))
     let lastUserMessageIndex = $derived(processedMessages.findLastIndex((m) => m.role === 'user'))
+
+    // Artifact side-pane state. Panel-mode artifacts (everything that is not an
+    // image) are collected across the conversation; chips in the message rows
+    // and the pane itself share this single registry.
+    let panelArtifacts = $derived(collectPanelArtifacts(processedMessages))
+    // Artifact chosen by the user; while a run streams new artifacts in and the
+    // pane is open, the pane follows the newest one instead.
+    let chosenArtifactKey = $state<string | null>(null)
+    let artifactPaneOpen = $state(false)
+    let activeArtifactKey = $derived(
+        isStreaming && artifactPaneOpen && panelArtifacts.length > 0
+            ? (panelArtifacts[panelArtifacts.length - 1]?.key ?? chosenArtifactKey)
+            : chosenArtifactKey,
+    )
+    let activeArtifact = $derived(
+        panelArtifacts.find((artifact) => artifact.key === activeArtifactKey) ?? null,
+    )
+    // Keeps the artifact available while the pane slides out (the derived
+    // active artifact is null once the pane is closed).
+    let lastOpenedArtifact = $state<ArtifactData | null>(null)
+
+    function toggleArtifactPane(artifact: ArtifactData) {
+        if (artifactPaneOpen && chosenArtifactKey === artifact.key) {
+            closeArtifactPane()
+        } else {
+            lastOpenedArtifact = artifact
+            chosenArtifactKey = artifact.key
+            artifactPaneOpen = true
+        }
+    }
+
+    function closeArtifactPane() {
+        artifactPaneOpen = false
+        chosenArtifactKey = null
+    }
+
+    // Called by the layout when the pane's slide-out transition ends; the
+    // artifact is cleared, which unmounts the pane in the layout.
+    function closeArtifactPaneFinished() {
+        lastOpenedArtifact = null
+    }
+
     // The streaming assistant message doubles as its own progress indicator once
     // it has anything visible (a tool call row or response text). Only show the
     // standalone loader while a response is starting and there is nothing to
@@ -1317,6 +1366,15 @@
     // This will trigger the streaming of AI response when the component is mounted
     // If no response is currently being streamed, nothing happens
     onMount(() => {
+        artifactPaneState.bind(
+            () => ({
+                artifact: activeArtifact ?? lastOpenedArtifact,
+                open: artifactPaneOpen,
+            }),
+            closeArtifactPane,
+            closeArtifactPaneFinished,
+        )
+
         if ((page.state as any).stream || data.approvedOAuth) {
             streamResponse(data.chat.id)
         } else {
@@ -1349,10 +1407,16 @@
         }
         document.addEventListener('visibilitychange', handleVisibility)
 
+        const handleKeyDown = (event: KeyboardEvent) => {
+            if (event.key === 'Escape' && artifactPaneState.open) closeArtifactPane()
+        }
+        window.addEventListener('keydown', handleKeyDown)
+
         return () => {
             chatContainerRef?.removeEventListener('scroll', handleScroll)
             resizeObserver.disconnect()
             document.removeEventListener('visibilitychange', handleVisibility)
+            window.removeEventListener('keydown', handleKeyDown)
         }
     })
 
@@ -2626,7 +2690,7 @@
 
 <div class="flex h-full flex-col">
     <!-- Chat Container -->
-    <div class="relative flex-1 overflow-hidden">
+    <div class="relative flex min-h-0 flex-1 overflow-hidden">
         <div
             class={cn(
                 'from-background pointer-events-none absolute inset-x-0 top-0 z-10 h-6 bg-gradient-to-b to-transparent transition-opacity duration-300',
@@ -2699,7 +2763,14 @@
                                     onOAuthComplete={() => streamResponse(data.chat.id)}
                                     {thinkingText}
                                     isPaused={(Boolean(pendingApproval) || oauthBlockerActive) &&
-                                        i === processedMessages.length - 1} />
+                                        i === processedMessages.length - 1}
+                                    activeArtifactKey={artifactPaneOpen ? activeArtifactKey : null}
+                                    emphasizeArtifactKey={isStreaming &&
+                                    !artifactPaneOpen &&
+                                    panelArtifacts.length > 0
+                                        ? panelArtifacts[panelArtifacts.length - 1].key
+                                        : null}
+                                    onOpenArtifact={toggleArtifactPane} />
                             </div>
                             {#if message.error}
                                 <div class="flex px-2">
@@ -2942,7 +3013,9 @@
                                 {#if approvalItems.length > 1}
                                     <div class="space-y-1 text-[13px]">
                                         {#each approvalItems as approval}
-                                            <div>• {approvalActionLabel(approval.tool_name)}</div>
+                                            <div>
+                                                • {approvalActionLabel(approval.tool_name)}
+                                            </div>
                                         {/each}
                                     </div>
                                 {/if}
