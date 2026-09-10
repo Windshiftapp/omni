@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { WindshiftApiClient } from "./client.js";
 
-test("item pagination uses REST v1 and normalizes nested fields", async () => {
+test("item pagination uses REST v2 and normalizes flat fields", async () => {
   const originalFetch = globalThis.fetch;
   const requestedPages: string[] = [];
   const requestedPaths: string[] = [];
@@ -18,7 +18,7 @@ test("item pagination uses REST v1 and normalizes nested fields", async () => {
       "Bearer token",
     );
     assert.equal(url.searchParams.get("sort"), "key");
-    assert.equal(url.searchParams.get("order"), "asc");
+    assert.equal(url.searchParams.has("order"), false);
     assert.equal(url.searchParams.get("workspace_id"), "1");
     return new Response(
       JSON.stringify({
@@ -29,8 +29,9 @@ test("item pagination uses REST v1 and normalizes nested fields", async () => {
             workspace_key: "ENG",
             workspace_item_number: Number(page),
             title: `Item ${page}`,
-            status: { id: 2, name: "In Progress" },
-            workspace: { id: 1, key: "ENG", name: "Engineering" },
+            status_id: 2,
+            status_name: "In Progress",
+            workspace_name: "Engineering",
             milestones: [{ id: 3, name: "0.8.3" }],
             created_at: "2026-07-21T12:00:00Z",
             updated_at: "2026-07-21T12:00:00Z",
@@ -38,8 +39,8 @@ test("item pagination uses REST v1 and normalizes nested fields", async () => {
         ],
         pagination: {
           page: Number(page),
-          limit: 100,
-          total: 2,
+          page_size: 100,
+          total_items: 2,
           total_pages: 2,
         },
       }),
@@ -57,15 +58,15 @@ test("item pagination uses REST v1 and normalizes nested fields", async () => {
     assert.deepEqual(itemIds, [1, 2]);
     assert.deepEqual(requestedPages, ["1", "2"]);
     assert.deepEqual(requestedPaths, [
-      "/rest/api/v1/items",
-      "/rest/api/v1/items",
+      "/rest/api/v2/items",
+      "/rest/api/v2/items",
     ]);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("workspace pagination and comments use REST v1 response shapes", async () => {
+test("workspace pagination and comments use REST v2 response shapes", async () => {
   const originalFetch = globalThis.fetch;
   const paths: string[] = [];
 
@@ -77,32 +78,28 @@ test("workspace pagination and comments use REST v1 response shapes", async () =
         data: [{ id: 1, key: "ENG", name: "Engineering" }],
         pagination: {
           page: 1,
-          limit: 100,
-          total: 1,
+          page_size: 100,
+          total_items: 1,
           total_pages: 1,
-          has_more: false,
         },
       });
     }
-    assert.equal(url.searchParams.get("page"), "1");
-    assert.equal(url.searchParams.get("limit"), "50");
-    assert.equal(url.searchParams.get("order"), "desc");
+    assert.equal(url.searchParams.has("page"), false);
+    assert.equal(url.searchParams.get("page_size"), "50");
+    assert.equal(url.searchParams.has("order"), false);
     return Response.json({
-      data: [
-        {
-          id: 9,
-          item_id: 7,
-          content: "OAuth now works",
-          author: { id: 2, full_name: "Ada Lovelace" },
-          created_at: "2026-07-21T12:00:00Z",
-          updated_at: "2026-07-21T12:00:00Z",
-        },
-      ],
-      pagination: {
-        page: 1,
-        limit: 50,
-        total: 1,
-        total_pages: 1,
+      data: {
+        comments: [
+          {
+            id: 9,
+            item_id: 7,
+            content: "OAuth now works",
+            author_id: 2,
+            author_name: "Ada Lovelace",
+            created_at: "2026-07-21T12:00:00Z",
+            updated_at: "2026-07-21T12:00:00Z",
+          },
+        ],
         has_more: false,
       },
     });
@@ -125,18 +122,18 @@ test("workspace pagination and comments use REST v1 response shapes", async () =
       },
     ]);
     assert.deepEqual(paths, [
-      "/rest/api/v1/workspaces",
-      "/rest/api/v1/items/7/comments",
+      "/rest/api/v2/workspaces",
+      "/rest/api/v2/items/7/comments",
     ]);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 
-test("item changes use string cursors and batch-fetch changed items", async () => {
+test("item changes normalize v2 cursors and batch-fetch changed items", async () => {
   const originalFetch = globalThis.fetch;
   const requestedPaths: string[] = [];
-  globalThis.fetch = async (input) => {
+  globalThis.fetch = async (input, init) => {
     const url = new URL(String(input));
     requestedPaths.push(`${url.pathname}?${url.searchParams}`);
     if (url.pathname.endsWith("/items/changes")) {
@@ -145,29 +142,32 @@ test("item changes use string cursors and batch-fetch changed items", async () =
       assert.equal(url.searchParams.get("through"), "13");
       assert.equal(url.searchParams.get("limit"), "500");
       return Response.json({
-        changes: [
-          { item_id: 7, change_type: "upsert" },
-          { item_id: 8, change_type: "delete" },
-        ],
-        next_cursor: "13",
-        watermark: "13",
-        has_more: false,
-        reset_required: false,
+        data: {
+          changed_item_ids: [7],
+          removed_item_ids: [8],
+          next_cursor: 13,
+          watermark: 13,
+          has_more: false,
+          reset_required: false,
+        },
       });
     }
     assert.equal(url.pathname.endsWith("/items/batch"), true);
-    assert.equal(url.searchParams.get("ids"), "7,9");
-    return Response.json([
-      {
-        id: 7,
-        workspace_id: 1,
-        workspace_key: "ENG",
-        workspace_item_number: 7,
-        title: "Changed item",
-        created_at: "2026-07-21T12:00:00Z",
-        updated_at: "2026-07-21T12:00:00Z",
-      },
-    ]);
+    assert.equal(init?.method, "POST");
+    assert.deepEqual(JSON.parse(String(init?.body)), { ids: [7, 9] });
+    return Response.json({
+      data: [
+        {
+          id: 7,
+          workspace_id: 1,
+          workspace_key: "ENG",
+          workspace_item_number: 7,
+          title: "Changed item",
+          created_at: "2026-07-21T12:00:00Z",
+          updated_at: "2026-07-21T12:00:00Z",
+        },
+      ],
+    });
   };
 
   try {
@@ -184,7 +184,72 @@ test("item changes use string cursors and batch-fetch changed items", async () =
       items.map((item) => item.id),
       [7],
     );
-    assert.equal(requestedPaths.length, 2);
+    assert.deepEqual(requestedPaths, [
+      "/rest/api/v2/items/changes?workspace_id=1&limit=500&since=10&through=13",
+      "/rest/api/v2/items/batch?",
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("item reads and writes use v2 envelopes and merge patch", async () => {
+  const originalFetch = globalThis.fetch;
+  const requests: Array<{ path: string; method: string; body?: unknown }> = [];
+
+  globalThis.fetch = async (input, init) => {
+    requests.push({
+      path: new URL(String(input)).pathname,
+      method: init?.method ?? "GET",
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+    });
+    if (init?.method === "PATCH") {
+      assert.equal(
+        (init.headers as Record<string, string>)["Content-Type"],
+        "application/merge-patch+json",
+      );
+      return Response.json({ data: { id: 7, title: "Updated" } });
+    }
+    if (init?.method === "POST") {
+      return Response.json({ data: { id: 8, title: "Created" } });
+    }
+    return Response.json({
+      data: {
+        id: 7,
+        workspace_id: 1,
+        workspace_key: "ENG",
+        workspace_item_number: 7,
+        title: "Item",
+        created_at: "2026-07-21T12:00:00Z",
+        updated_at: "2026-07-21T12:00:00Z",
+      },
+    });
+  };
+
+  try {
+    const client = new WindshiftApiClient("https://windshift.example", "token");
+    assert.equal((await client.getItem(7)).title, "Item");
+    assert.deepEqual(await client.updateItem(7, { title: "Updated" }), {
+      id: 7,
+      title: "Updated",
+    });
+    assert.deepEqual(await client.createItem({ workspace_id: 1, title: "Created" }), {
+      id: 8,
+      title: "Created",
+    });
+    assert.deepEqual(requests, [
+      { path: "/rest/api/v2/items/7", method: "GET", body: undefined },
+      {
+        path: "/rest/api/v2/items/7",
+        method: "PATCH",
+        body: { title: "Updated" },
+      },
+      {
+        path: "/rest/api/v2/items",
+        method: "POST",
+        body: { workspace_id: 1, title: "Created" },
+      },
+    ]);
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -106,16 +106,19 @@ test("full sync checkpoints only after indexing visible items", async () => {
     if (url.includes("/workspaces?")) {
       return Response.json({
         data: [{ id: 1, key: "W1", name: "Workspace 1" }],
-        pagination: { page: 1, total_pages: 1, has_more: false },
+        pagination: { page: 1, page_size: 100, total_items: 1, total_pages: 1 },
       });
     }
     if (url.includes("/items/changes?")) {
       return Response.json({
-        changes: [],
-        next_cursor: "5",
-        watermark: "5",
-        has_more: false,
-        reset_required: false,
+        data: {
+          changed_item_ids: [],
+          removed_item_ids: [],
+          next_cursor: 5,
+          watermark: 5,
+          has_more: false,
+          reset_required: false,
+        },
       });
     }
     if (url.includes("/items?")) {
@@ -132,11 +135,11 @@ test("full sync checkpoints only after indexing visible items", async () => {
             updated_at: "2026-01-02T00:00:00.000Z",
           },
         ],
-        pagination: { page: 1, total_pages: 1, has_more: false },
+        pagination: { page: 1, page_size: 100, total_items: 1, total_pages: 1 },
       });
     }
     if (url.includes("/items/2/comments")) {
-      return Response.json({ data: [] });
+      return Response.json({ data: { comments: [], has_more: false } });
     }
     throw new Error(`Unexpected request: ${url}`);
   };
@@ -225,23 +228,26 @@ test("incremental sync consumes change pages and emits deletions", async () => {
   const requestedPaths: string[] = [];
   let changePage = 0;
   let failureMode = false;
-  globalThis.fetch = async (input) => {
+  globalThis.fetch = async (input, init) => {
     const url = new URL(String(input));
     requestedPaths.push(`${url.pathname}?${url.searchParams}`);
     if (url.pathname.endsWith("/workspaces")) {
       return Response.json({
         data: [{ id: 1, key: "W1", name: "Workspace 1" }],
-        pagination: { page: 1, total_pages: 1, has_more: false },
+        pagination: { page: 1, page_size: 100, total_items: 1, total_pages: 1 },
       });
     }
     if (url.pathname.endsWith("/items/changes")) {
       if (failureMode) {
         return Response.json({
-          changes: [{ item_id: 9, change_type: "upsert" }],
-          next_cursor: "13",
-          watermark: "13",
-          has_more: false,
-          reset_required: false,
+          data: {
+            changed_item_ids: [9],
+            removed_item_ids: [],
+            next_cursor: 13,
+            watermark: 13,
+            has_more: false,
+            reset_required: false,
+          },
         });
       }
       changePage++;
@@ -249,26 +255,34 @@ test("incremental sync consumes change pages and emits deletions", async () => {
         assert.equal(url.searchParams.get("since"), "10");
         assert.equal(url.searchParams.has("through"), false);
         return Response.json({
-          changes: [{ item_id: 7, change_type: "upsert" }],
-          next_cursor: "11",
-          watermark: "12",
-          has_more: true,
-          reset_required: false,
+          data: {
+            changed_item_ids: [7],
+            removed_item_ids: [],
+            next_cursor: 11,
+            watermark: 12,
+            has_more: true,
+            reset_required: false,
+          },
         });
       }
       assert.equal(url.searchParams.get("since"), "11");
       assert.equal(url.searchParams.get("through"), "12");
       return Response.json({
-        changes: [{ item_id: 8, change_type: "delete" }],
-        next_cursor: "12",
-        watermark: "12",
-        has_more: false,
-        reset_required: false,
+        data: {
+          changed_item_ids: [],
+          removed_item_ids: [8],
+          next_cursor: 12,
+          watermark: 12,
+          has_more: false,
+          reset_required: false,
+        },
       });
     }
     if (url.pathname.endsWith("/items/batch")) {
+      assert.equal(init?.method, "POST");
       if (failureMode) {
-        return Response.json([
+        assert.deepEqual(JSON.parse(String(init?.body)), { ids: [9] });
+        return Response.json({ data: [
           {
             id: 9,
             workspace_id: 1,
@@ -278,10 +292,10 @@ test("incremental sync consumes change pages and emits deletions", async () => {
             created_at: "2026-01-01T00:00:00.000Z",
             updated_at: "2026-01-02T00:00:00.000Z",
           },
-        ]);
+        ] });
       }
-      assert.equal(url.searchParams.get("ids"), "7");
-      return Response.json([
+      assert.deepEqual(JSON.parse(String(init?.body)), { ids: [7] });
+      return Response.json({ data: [
         {
           id: 7,
           workspace_id: 1,
@@ -291,13 +305,13 @@ test("incremental sync consumes change pages and emits deletions", async () => {
           created_at: "2026-01-01T00:00:00.000Z",
           updated_at: "2026-01-02T00:00:00.000Z",
         },
-      ]);
+      ] });
     }
     if (url.pathname.endsWith("/items/7/comments")) {
-      return Response.json({ data: [] });
+      return Response.json({ data: { comments: [], has_more: false } });
     }
     if (url.pathname.endsWith("/items/9/comments")) {
-      return Response.json({ data: [] });
+      return Response.json({ data: { comments: [], has_more: false } });
     }
     throw new Error(`Unexpected request: ${url}`);
   };
@@ -356,8 +370,8 @@ test("incremental sync consumes change pages and emits deletions", async () => {
       workspace_cursors: { "1": "12" },
     });
     assert.equal(
-      requestedPaths.some((path) => path.startsWith("/rest/api/v1/items?")),
-      false,
+      requestedPaths.every((path) => path.startsWith("/rest/api/v2/")),
+      true,
     );
 
     failureMode = true;
