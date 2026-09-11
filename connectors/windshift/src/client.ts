@@ -9,6 +9,8 @@ import type {
 const PAGE_SIZE = 100;
 const CHANGE_PAGE_SIZE = 500;
 const MAX_COMMENTS_PER_ITEM = 50;
+// The v2 comments/batch endpoint accepts at most 500 item ids per request.
+const MAX_COMMENT_BATCH_ITEMS = 500;
 
 function joinUrl(baseUrl: string, path: string): string {
   const trimmed = baseUrl.replace(/\/+$/, "");
@@ -62,12 +64,10 @@ type WindshiftItemChangesResponseV2 = {
   reset_required: boolean;
 };
 
-type WindshiftCommentFeedResponse = {
+type WindshiftCommentBatchEntry = {
+  item_id: number;
   comments: WindshiftCommentResponse[];
-  next_cursor?: string;
-  refresh_cursor?: string;
   has_more: boolean;
-  total?: number | null;
 };
 
 type WindshiftEnvelope<T> = { data: T };
@@ -238,14 +238,31 @@ export class WindshiftApiClient {
     return response.data.map(mapItem);
   }
 
-  async fetchItemComments(itemId: number): Promise<WindshiftComment[]> {
-    const params = new URLSearchParams({
-      page_size: String(MAX_COMMENTS_PER_ITEM),
-    });
-    const response = await this.request<
-      WindshiftEnvelope<WindshiftCommentFeedResponse>
-    >(`/items/${itemId}/comments?${params}`);
-    return response.data.comments.map(mapComment);
+  // One request per chunk instead of one per item: a full sync of N items
+  // issues ceil(N / 100) comment requests instead of N.
+  async fetchCommentsByItemIds(
+    itemIds: number[],
+  ): Promise<Map<number, WindshiftComment[]>> {
+    const commentsByItem = new Map<number, WindshiftComment[]>();
+    for (const id of itemIds) {
+      commentsByItem.set(id, []);
+    }
+    for (let start = 0; start < itemIds.length; start += MAX_COMMENT_BATCH_ITEMS) {
+      const chunk = itemIds.slice(start, start + MAX_COMMENT_BATCH_ITEMS);
+      const response = await this.request<
+        WindshiftEnvelope<WindshiftCommentBatchEntry[]>
+      >("/comments/batch", {
+        method: "POST",
+        body: { item_ids: chunk, page_size: MAX_COMMENTS_PER_ITEM },
+      });
+      for (const entry of response.data) {
+        commentsByItem.set(
+          entry.item_id,
+          entry.comments.map(mapComment),
+        );
+      }
+    }
+    return commentsByItem;
   }
 
   async getItem(itemId: number): Promise<WindshiftItem> {

@@ -66,11 +66,12 @@ test("item pagination uses REST v2 and normalizes flat fields", async () => {
   }
 });
 
-test("workspace pagination and comments use REST v2 response shapes", async () => {
+test("workspace pagination and comment batches use REST v2 response shapes", async () => {
   const originalFetch = globalThis.fetch;
   const paths: string[] = [];
+  let batchBody: unknown;
 
-  globalThis.fetch = async (input) => {
+  globalThis.fetch = async (input, init) => {
     const url = new URL(String(input));
     paths.push(url.pathname);
     if (url.pathname.endsWith("/workspaces")) {
@@ -84,24 +85,27 @@ test("workspace pagination and comments use REST v2 response shapes", async () =
         },
       });
     }
-    assert.equal(url.searchParams.has("page"), false);
-    assert.equal(url.searchParams.get("page_size"), "50");
-    assert.equal(url.searchParams.has("order"), false);
+    assert.equal(url.pathname.endsWith("/comments/batch"), true);
+    assert.equal(init?.method, "POST");
+    batchBody = JSON.parse(String(init?.body));
     return Response.json({
-      data: {
-        comments: [
-          {
-            id: 9,
-            item_id: 7,
-            content: "OAuth now works",
-            author_id: 2,
-            author_name: "Ada Lovelace",
-            created_at: "2026-07-21T12:00:00Z",
-            updated_at: "2026-07-21T12:00:00Z",
-          },
-        ],
-        has_more: false,
-      },
+      data: [
+        {
+          item_id: 7,
+          has_more: false,
+          comments: [
+            {
+              id: 9,
+              item_id: 7,
+              content: "OAuth now works",
+              author_id: 2,
+              author_name: "Ada Lovelace",
+              created_at: "2026-07-21T12:00:00Z",
+              updated_at: "2026-07-21T12:00:00Z",
+            },
+          ],
+        },
+      ],
     });
   };
 
@@ -110,7 +114,12 @@ test("workspace pagination and comments use REST v2 response shapes", async () =
     assert.deepEqual(await client.fetchWorkspaces(), [
       { id: 1, key: "ENG", name: "Engineering" },
     ]);
-    assert.deepEqual(await client.fetchItemComments(7), [
+    const commentsByItem = await client.fetchCommentsByItemIds([7, 8]);
+    assert.deepEqual(batchBody, {
+      item_ids: [7, 8],
+      page_size: 50,
+    });
+    assert.deepEqual(commentsByItem.get(7), [
       {
         id: 9,
         item_id: 7,
@@ -121,10 +130,52 @@ test("workspace pagination and comments use REST v2 response shapes", async () =
         updated_at: "2026-07-21T12:00:00Z",
       },
     ]);
+    // Items without feed entries still get an empty list.
+    assert.deepEqual(commentsByItem.get(8), []);
     assert.deepEqual(paths, [
       "/rest/api/v2/workspaces",
-      "/rest/api/v2/items/7/comments",
+      "/rest/api/v2/comments/batch",
     ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("comment batches chunk item ids at the endpoint cap", async () => {
+  const originalFetch = globalThis.fetch;
+  const batches: number[][] = [];
+
+  globalThis.fetch = async (_input, init) => {
+    batches.push(JSON.parse(String(init?.body)).item_ids);
+    return Response.json({ data: [] });
+  };
+
+  try {
+    const client = new WindshiftApiClient("https://windshift.example", "token");
+    const itemIds = Array.from({ length: 501 }, (_, index) => index + 1);
+    const commentsByItem = await client.fetchCommentsByItemIds(itemIds);
+    assert.equal(batches.length, 2);
+    assert.equal(batches[0].length, 500);
+    assert.equal(batches[1].length, 1);
+    assert.equal(commentsByItem.size, 501);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("comment batches skip the request for empty input", async () => {
+  const originalFetch = globalThis.fetch;
+  let called = false;
+
+  globalThis.fetch = async () => {
+    called = true;
+    return Response.json({ data: [] });
+  };
+
+  try {
+    const client = new WindshiftApiClient("https://windshift.example", "token");
+    assert.deepEqual(await client.fetchCommentsByItemIds([]), new Map());
+    assert.equal(called, false);
   } finally {
     globalThis.fetch = originalFetch;
   }

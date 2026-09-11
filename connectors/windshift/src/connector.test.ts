@@ -99,9 +99,10 @@ test("full sync checkpoints only after indexing visible items", async () => {
   let scanned = 0;
   let completed = false;
   let emittedPermissions: unknown;
+  let savedContent = "";
   let completedState: unknown;
 
-  globalThis.fetch = async (input) => {
+  globalThis.fetch = async (input, init) => {
     const url = String(input);
     if (url.includes("/workspaces?")) {
       return Response.json({
@@ -138,8 +139,30 @@ test("full sync checkpoints only after indexing visible items", async () => {
         pagination: { page: 1, page_size: 100, total_items: 1, total_pages: 1 },
       });
     }
-    if (url.includes("/items/2/comments")) {
-      return Response.json({ data: { comments: [], has_more: false } });
+    if (url.includes("/comments/batch")) {
+      assert.equal(init?.method, "POST");
+      assert.deepEqual(JSON.parse(String(init?.body)), {
+        item_ids: [2],
+        page_size: 50,
+      });
+      return Response.json({
+        data: [
+          {
+            item_id: 2,
+            has_more: false,
+            comments: [
+              {
+                id: 3,
+                item_id: 2,
+                content: "Synced from the batch feed",
+                author_name: "Ada Lovelace",
+                created_at: "2026-01-03T00:00:00.000Z",
+                updated_at: "2026-01-03T00:00:00.000Z",
+              },
+            ],
+          },
+        ],
+      });
     }
     throw new Error(`Unexpected request: ${url}`);
   };
@@ -150,7 +173,12 @@ test("full sync checkpoints only after indexing visible items", async () => {
     incrementScanned: async () => {
       scanned++;
     },
-    contentStorage: { save: async () => "content-1" },
+    contentStorage: {
+      save: async (content: string) => {
+        savedContent = content;
+        return "content-1";
+      },
+    },
     emit: async (document: { permissions?: unknown }) => {
       emitted++;
       emittedPermissions = document.permissions;
@@ -181,6 +209,7 @@ test("full sync checkpoints only after indexing visible items", async () => {
     assert.equal(scanned, 1);
     assert.equal(emitted, 1);
     assert.equal(completed, true);
+    assert.match(savedContent, /Synced from the batch feed/);
     assert.deepEqual(completedState, {
       workspace_cursors: { "1": "5" },
     });
@@ -307,11 +336,15 @@ test("incremental sync consumes change pages and emits deletions", async () => {
         },
       ] });
     }
-    if (url.pathname.endsWith("/items/7/comments")) {
-      return Response.json({ data: { comments: [], has_more: false } });
-    }
-    if (url.pathname.endsWith("/items/9/comments")) {
-      return Response.json({ data: { comments: [], has_more: false } });
+    if (url.pathname.endsWith("/comments/batch")) {
+      assert.equal(init?.method, "POST");
+      const body = JSON.parse(String(init?.body));
+      if (failureMode) {
+        assert.deepEqual(body, { item_ids: [9], page_size: 50 });
+      } else {
+        assert.deepEqual(body, { item_ids: [7], page_size: 50 });
+      }
+      return Response.json({ data: [] });
     }
     throw new Error(`Unexpected request: ${url}`);
   };
